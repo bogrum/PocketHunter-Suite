@@ -1,0 +1,14 @@
+# Ignore a specific directory
+uploads/
+
+# Ignore a specific file
+.DS_Store
+.env
+
+# Ignore Python-specific files and directories
+__pycache__/
+*.pyc
+
+# Ignore environment and IDE files
+.idea/
+.vscode/
