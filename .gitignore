@@ -13,3 +13,8 @@ __pycache__/
 # Ignore environment and IDE files
 .idea/
 .vscode/
+
+# Ignore these folders from now on
+job_statuses/
+results/
+test_output/
