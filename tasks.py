@@ -2,9 +2,11 @@ import subprocess
 import os
 import uuid
 import shutil 
+import json
 from celery_app import celery_app 
 import time
 from datetime import datetime
+import pandas as pd
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 POCKETHUNTER_DIR = os.path.join(BASE_DIR, 'PocketHunter')
@@ -513,11 +515,10 @@ def run_cluster_pockets_task(self, pockets_csv_path_abs, job_id, min_prob, clust
     command = [
         'python', POCKETHUNTER_CLI,
         'cluster_pockets',
-        '--pockets_csv', pockets_csv_path_abs,
+        '--infile', pockets_csv_path_abs,
         '--outfolder', os.path.abspath(output_clusters_dir), 
         '--min_prob', str(min_prob),
-        '--method', clustering_method,
-        '--overwrite'
+        '--method', clustering_method
     ]
     
     if clustering_method == 'dbscan' and dbscan_hierarchical:
@@ -582,30 +583,63 @@ def run_cluster_pockets_task(self, pockets_csv_path_abs, job_id, min_prob, clust
         elapsed = time.time() - start_time
 
         if process.returncode == 0:
-            # Find output files
-            clustered_pockets_csv_abs = os.path.join(output_clusters_dir, 'clustered_pockets.csv')
-            representatives_csv_abs = os.path.join(output_clusters_dir, 'representatives.csv')
+            # Find output files (check for both possible naming conventions)
+            clustered_pockets_csv_abs = os.path.join(output_clusters_dir, 'pockets_clustered.csv')
+            if not os.path.exists(clustered_pockets_csv_abs):
+                clustered_pockets_csv_abs = os.path.join(output_clusters_dir, 'clustered_pockets.csv')
+            
+            representatives_csv_abs = os.path.join(output_clusters_dir, 'cluster_representatives.csv')
+            if not os.path.exists(representatives_csv_abs):
+                representatives_csv_abs = os.path.join(output_clusters_dir, 'representatives.csv')
+            
+            # Debug: List all files in the output directory
+            import glob
+            all_files = glob.glob(os.path.join(output_clusters_dir, '*.csv'))
+            print(f"Debug: Found CSV files in {output_clusters_dir}: {all_files}")
+            print(f"Debug: Looking for clustered_pockets_csv_abs: {clustered_pockets_csv_abs}")
+            print(f"Debug: Looking for representatives_csv_abs: {representatives_csv_abs}")
+            print(f"Debug: clustered_pockets_csv_abs exists: {os.path.exists(clustered_pockets_csv_abs)}")
+            print(f"Debug: representatives_csv_abs exists: {os.path.exists(representatives_csv_abs)}")
             
             # Count results
             total_pockets = 0
             clusters_found = 0
             representatives = 0
             
+            # Try to find files by pattern if exact names don't exist
+            if not os.path.exists(clustered_pockets_csv_abs):
+                # Look for any CSV file that might contain clustered pockets
+                for csv_file in all_files:
+                    if 'cluster' in csv_file.lower() and 'pocket' in csv_file.lower():
+                        clustered_pockets_csv_abs = csv_file
+                        break
+            
+            if not os.path.exists(representatives_csv_abs):
+                # Look for any CSV file that might contain representatives
+                for csv_file in all_files:
+                    if 'representative' in csv_file.lower():
+                        representatives_csv_abs = csv_file
+                        break
+            
             if os.path.exists(clustered_pockets_csv_abs):
                 import pandas as pd
                 try:
                     df = pd.read_csv(clustered_pockets_csv_abs)
                     total_pockets = len(df)
-                    if 'cluster_id' in df.columns:
+                    if 'cluster' in df.columns:
+                        clusters_found = df['cluster'].nunique()
+                    elif 'cluster_id' in df.columns:
                         clusters_found = df['cluster_id'].nunique()
-                except:
+                except Exception as e:
+                    print(f"Debug: Error reading clustered_pockets_csv: {e}")
                     pass
             
             if os.path.exists(representatives_csv_abs):
                 try:
                     df = pd.read_csv(representatives_csv_abs)
                     representatives = len(df)
-                except:
+                except Exception as e:
+                    print(f"Debug: Error reading representatives_csv: {e}")
                     pass
             
             # Final success update
@@ -632,19 +666,44 @@ def run_cluster_pockets_task(self, pockets_csv_path_abs, job_id, min_prob, clust
                 'stderr': stderr
             }
             
+            # Update the status file to reflect completion
+            status_file = os.path.join(RESULTS_DIR, f'{job_id}_status.json')
+            completion_status = {
+                'status': 'completed',
+                'step': 'Pocket clustering completed successfully',
+                'last_updated': datetime.now().isoformat(),
+                'task_id': self.request.id,
+                'result_info': results_overview
+            }
+            with open(status_file, 'w') as f:
+                json.dump(completion_status, f, indent=4)
+            
             self.update_state(state='SUCCESS', meta=results_overview)
             return results_overview
         else:
             error_message = f"Pocket clustering failed. Return code: {process.returncode}"
-            self.update_state(
-                state='FAILURE', 
-                meta={
-                    'status': error_message, 
-                    'stdout': stdout, 
-                    'stderr': stderr, 
-                    'output_folder': job_main_output_folder
-                }
-            )
+            meta = {
+                'status': error_message, 
+                'stdout': stdout, 
+                'stderr': stderr, 
+                'output_folder': job_main_output_folder,
+                'exc_type': 'Exception',
+                'exc_message': f"{error_message}. Stderr: {stderr}"
+            }
+            
+            # Update the status file to reflect failure
+            status_file = os.path.join(RESULTS_DIR, f'{job_id}_status.json')
+            failure_status = {
+                'status': 'failed',
+                'step': 'Pocket clustering failed',
+                'last_updated': datetime.now().isoformat(),
+                'task_id': self.request.id,
+                'error_info': meta
+            }
+            with open(status_file, 'w') as f:
+                json.dump(failure_status, f, indent=4)
+            
+            self.update_state(state='FAILURE', meta=meta)
             raise Exception(f"{error_message}. Stderr: {stderr}")
 
     except Exception as e:
@@ -656,5 +715,146 @@ def run_cluster_pockets_task(self, pockets_csv_path_abs, job_id, min_prob, clust
         }
         if hasattr(e, 'stdout'): meta['stdout'] = e.stdout
         if hasattr(e, 'stderr'): meta['stderr'] = e.stderr
+        self.update_state(state='FAILURE', meta=meta)
+        raise 
+
+
+@celery_app.task(bind=True)
+def run_docking_task(self, cluster_representatives_csv, ligand_folder, job_id, smina_exe_path=None, num_poses=10, exhaustiveness=8, ph_value=7.4, box_size_x=20.0, box_size_y=20.0, box_size_z=20.0):
+    """
+    Molecular docking task for Streamlit app.
+    """
+    start_time = time.time()
+    
+    self.update_state(
+        state='PROGRESS', 
+        meta={
+            'current_step': 'Initializing docking...',
+            'progress': 0,
+            'status': 'Docking started'
+        }
+    )
+
+    # Create output directory
+    output_folder_job = os.path.join(RESULTS_DIR, f'dock_{job_id}')
+    os.makedirs(output_folder_job, exist_ok=True)
+    
+    # Set default smina path if not provided
+    if smina_exe_path is None:
+        smina_exe_path = 'smina'  # Assume smina is in PATH
+    
+    self.update_state(
+        state='PROGRESS', 
+        meta={
+            'current_step': 'Reading cluster representatives',
+            'progress': 10,
+            'status': 'Loading pocket data...'
+        }
+    )
+
+    try:
+        # Import docking functions
+        import sys
+        sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+        from step4_docking import dock_ensemble, pdb_to_pdbqt, calc_box, run_smina, parse_smina_log
+        
+        # Read cluster representatives
+        df_rep_pockets = pd.read_csv(cluster_representatives_csv)
+        
+        self.update_state(
+            state='PROGRESS', 
+            meta={
+                'current_step': 'Preparing docking calculations',
+                'progress': 20,
+                'status': f'Found {len(df_rep_pockets)} cluster representatives'
+            }
+        )
+        
+        # Run docking ensemble
+        df_outputs = dock_ensemble(
+            df_rep_pockets=df_rep_pockets,
+            ligand_folder=ligand_folder,
+            smina_exe=smina_exe_path,
+            out_folder=output_folder_job,
+            num_poses=num_poses,
+            exhaustiveness=exhaustiveness,
+            ph_value=ph_value,
+            box_size_x=box_size_x,
+            box_size_y=box_size_y,
+            box_size_z=box_size_z
+        )
+        
+        # Save results
+        docking_results_file = os.path.join(output_folder_job, 'docking_results.csv')
+        df_outputs.to_csv(docking_results_file, index=False)
+        
+        elapsed = time.time() - start_time
+        
+        # Calculate statistics
+        total_docking_poses = len(df_outputs)
+        unique_ligands = df_outputs['ligand'].nunique()
+        unique_receptors = df_outputs['receptor'].nunique()
+        best_affinity = df_outputs['affinity (kcal/mol)'].min()
+        
+        self.update_state(
+            state='PROGRESS',
+            meta={
+                'current_step': 'Docking completed',
+                'progress': 100,
+                'status': f'Successfully docked {unique_ligands} ligands to {unique_receptors} receptors',
+                'elapsed': elapsed
+            }
+        )
+        
+        results_overview = {
+            'status': 'completed',
+            'docking_output_dir': output_folder_job,
+            'docking_results_file': docking_results_file,
+            'total_docking_poses': total_docking_poses,
+            'unique_ligands': unique_ligands,
+            'unique_receptors': unique_receptors,
+            'best_affinity': best_affinity,
+            'processing_time': elapsed,
+            'num_poses': num_poses,
+            'exhaustiveness': exhaustiveness
+        }
+        
+        # Update the status file to reflect completion
+        status_file = os.path.join(RESULTS_DIR, f'dock_{job_id}_status.json')
+        completion_status = {
+            'status': 'completed',
+            'step': 'Molecular docking completed successfully',
+            'last_updated': datetime.now().isoformat(),
+            'task_id': self.request.id,
+            'result_info': results_overview
+        }
+        with open(status_file, 'w') as f:
+            json.dump(completion_status, f, indent=4)
+        
+        self.update_state(state='SUCCESS', meta=results_overview)
+        return results_overview
+        
+    except Exception as e:
+        elapsed = time.time() - start_time
+        meta = {
+            'status': f'Error occurred: {str(e)}', 
+            'output_folder': output_folder_job,
+            'exc_type': type(e).__name__,
+            'exc_message': str(e),
+            'processing_time': elapsed
+        }
+        
+        # Update the status file to reflect failure
+        status_file = os.path.join(RESULTS_DIR, f'dock_{job_id}_status.json')
+        failure_status = {
+            'status': 'failed',
+            'step': 'Molecular docking failed',
+            'last_updated': datetime.now().isoformat(),
+            'task_id': self.request.id,
+            'error_info': meta
+        }
+        with open(status_file, 'w') as f:
+            json.dump(failure_status, f, indent=4)
+        
         self.update_state(state='FAILURE', meta=meta)
         raise 

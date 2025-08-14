@@ -26,6 +26,63 @@ if 'cluster_task_id' not in st.session_state:
 if 'cluster_status' not in st.session_state:
     st.session_state.cluster_status = 'idle'
 
+# Restore session state from status file if we have a job_id but no task_id
+if st.session_state.cluster_job_id and not st.session_state.cluster_task_id:
+    status_file = os.path.join(RESULTS_DIR, f'{st.session_state.cluster_job_id}_status.json')
+    if os.path.exists(status_file):
+        try:
+            with open(status_file, 'r') as f:
+                status_data = json.load(f)
+                if 'task_id' in status_data:
+                    st.session_state.cluster_task_id = status_data['task_id']
+                    st.session_state.cluster_status = status_data.get('status', 'running')
+        except Exception as e:
+            st.error(f"Error reading status file: {str(e)}")
+
+# Auto-restore cluster job_id from cached job IDs if not set
+if not st.session_state.cluster_job_id and 'cached_job_ids' in st.session_state:
+    cached_cluster_id = st.session_state.cached_job_ids.get('cluster')
+    if cached_cluster_id:
+        st.session_state.cluster_job_id = cached_cluster_id
+        # Also try to restore task_id from status file
+        status_file = os.path.join(RESULTS_DIR, f'{cached_cluster_id}_status.json')
+        if os.path.exists(status_file):
+            try:
+                with open(status_file, 'r') as f:
+                    status_data = json.load(f)
+                    if 'task_id' in status_data:
+                        st.session_state.cluster_task_id = status_data['task_id']
+                        st.session_state.cluster_status = status_data.get('status', 'running')
+            except Exception as e:
+                st.error(f"Error reading status file: {str(e)}")
+
+# Auto-detect running cluster jobs if no job_id is set
+if not st.session_state.cluster_job_id:
+
+    # Look for the most recent cluster job that's still running
+    cluster_jobs = [f for f in os.listdir(RESULTS_DIR) if f.startswith('cluster_') and f.endswith('_status.json')]
+    if cluster_jobs:
+        # Sort by modification time (most recent first)
+        cluster_jobs.sort(key=lambda x: os.path.getmtime(os.path.join(RESULTS_DIR, x)), reverse=True)
+        latest_job_file = cluster_jobs[0]
+        job_id = latest_job_file.replace('_status.json', '')
+        
+        # Check if this job is still running
+        status_file = os.path.join(RESULTS_DIR, latest_job_file)
+        try:
+            with open(status_file, 'r') as f:
+                status_data = json.load(f)
+                if status_data.get('status') == 'running':
+                    st.session_state.cluster_job_id = job_id
+                    if 'task_id' in status_data:
+                        st.session_state.cluster_task_id = status_data['task_id']
+                        st.session_state.cluster_status = 'running'
+
+ 
+        except Exception as e:
+            st.error(f"Error reading status file: {str(e)}")
+
+
 # Helper functions
 def handle_file_upload(uploaded_file, job_id, filename_prefix=""):
     if uploaded_file is not None:
@@ -208,134 +265,172 @@ if st.button("🚀 Start Pocket Clustering", type="primary", use_container_width
         st.info(f"Input source: {input_source}")
         st.info("Monitor progress below or in the Task Monitor tab.")
 
-# Status monitoring
+# Status monitoring - Show progress for any running or completed task
+show_progress = False
+progress_info = {}
+current_step = "Processing..."
+progress_percent = 0
+status = "Running..."
+task_state = "UNKNOWN"
+
+
+
+
+
+# Check if we have a task ID
+task = None
 if st.session_state.cluster_task_id:
-    st.markdown("### 📊 Clustering Status")
-    
+
+    show_progress = True
     try:
-        task = celery_app.AsyncResult(st.session_state.cluster_task_id)
-    except Exception as e:
-        st.error(f"Error checking task status: {str(e)}")
-        st.session_state.cluster_task_id = None
-        st.session_state.cluster_status = 'failed'
-        st.stop()
-    
-    # BULLETPROOF: ALWAYS show progress bar if there's any task activity - NEVER let it disappear!
-    show_progress = False
-    progress_info = {}
-    current_step = "Processing..."
-    progress_percent = 0
-    status = "Running..."
-    task_state = "UNKNOWN"
-    
-    # Check if we have a task ID
-    if st.session_state.cluster_task_id:
-        show_progress = True
         task = celery_app.AsyncResult(st.session_state.cluster_task_id)
         progress_info = task.info or {}
         current_step = progress_info.get('current_step', 'Processing...')
         progress_percent = progress_info.get('progress', 0)
         status = progress_info.get('status', 'Running...')
         task_state = task.state
-    
-    # Check if status is running (fallback)
-    elif st.session_state.cluster_status == 'running':
-        show_progress = True
-        progress_percent = 50  # Default to 50% if we don't know
-        status = "Running..."
-        task_state = "PROGRESS"
-    
-    # Check if we have a job ID and status is completed (show results with progress bar)
-    elif st.session_state.cluster_job_id and st.session_state.cluster_status == 'completed':
-        show_progress = True
-        progress_percent = 100
-        current_step = "Pocket clustering completed successfully!"
-        status = "Completed"
-        task_state = "SUCCESS"
-    
-    # If we should show progress, ALWAYS show it
-    if show_progress:
-        # Status indicator based on task state
-        if task_state == 'PENDING':
-            st.markdown('<div class="status-info">⏳ Pocket clustering is queued and waiting to start...</div>', unsafe_allow_html=True)
-            # Set initial progress for pending tasks
-            progress_percent = 0
-            current_step = "Waiting to start..."
-            status = "Queued..."
-        elif task_state == 'PROGRESS':
-            st.markdown(f'<div class="status-info">🔄 Pocket clustering is running: {current_step}</div>', unsafe_allow_html=True)
-        elif task_state == 'SUCCESS':
-            st.markdown('<div class="status-success">✅ Pocket clustering completed successfully!</div>', unsafe_allow_html=True)
-            # Keep progress at 100% for completed tasks
+        
+        # If task is completed, override progress to 100%
+        if task_state == 'SUCCESS':
             progress_percent = 100
             current_step = "Pocket clustering completed successfully!"
             status = "Completed"
         elif task_state == 'FAILURE':
-            st.markdown('<div class="status-error">❌ Pocket clustering failed!</div>', unsafe_allow_html=True)
-            # Keep progress visible even for failed tasks
             current_step = "Task failed"
             status = "Failed"
+            
+    except Exception as e:
+        st.error(f"Error checking task status: {str(e)}")
+        st.session_state.cluster_task_id = None
+        st.session_state.cluster_status = 'failed'
+        st.stop()
+
+# Check if status is running (fallback)
+elif st.session_state.cluster_status == 'running':
+
+    show_progress = True
+    progress_percent = 50  # Default to 50% if we don't know
+    status = "Running..."
+    task_state = "PROGRESS"
+
+# Check if we have a job ID and status is completed (show results with progress bar)
+elif st.session_state.cluster_job_id and st.session_state.cluster_status == 'completed':
+
+    show_progress = True
+    progress_percent = 100
+    current_step = "Pocket clustering completed successfully!"
+    status = "Completed"
+    task_state = "SUCCESS"
+
+# If we should show progress, ALWAYS show it
+
+if show_progress:
+
+    st.markdown("### 📊 Clustering Status")
+    
+    # Status indicator based on task state
+    if task_state == 'PENDING':
+        st.markdown('<div class="status-info">⏳ Pocket clustering is queued and waiting to start...</div>', unsafe_allow_html=True)
+        # Set initial progress for pending tasks
+        progress_percent = 0
+        current_step = "Waiting to start..."
+        status = "Queued..."
+    elif task_state == 'PROGRESS':
+        st.markdown(f'<div class="status-info">🔄 Pocket clustering is running: {current_step}</div>', unsafe_allow_html=True)
+    elif task_state == 'SUCCESS':
+        st.markdown('<div class="status-success">✅ Pocket clustering completed successfully!</div>', unsafe_allow_html=True)
+        # Keep progress at 100% for completed tasks
+        progress_percent = 100
+        current_step = "Pocket clustering completed successfully!"
+        status = "Completed"
+    elif task_state == 'FAILURE':
+        st.markdown('<div class="status-error">❌ Pocket clustering failed!</div>', unsafe_allow_html=True)
+        # Keep progress visible even for failed tasks
+        current_step = "Task failed"
+        status = "Failed"
+    else:
+        st.markdown(f'<div class="status-info">🔄 Pocket clustering status: {task_state}</div>', unsafe_allow_html=True)
+    
+    # ALWAYS show the progress bar - NEVER disappears!
+    st.markdown("### 📊 Progress")
+    progress_bar = st.progress(progress_percent / 100)
+    
+    # Progress details in columns - always visible
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        st.metric("Progress", f"{progress_percent:.1f}%")
+    
+    with col2:
+        if 'elapsed' in progress_info:
+            elapsed = progress_info['elapsed']
+            st.metric("Elapsed Time", f"{elapsed:.1f}s")
         else:
-            st.markdown(f'<div class="status-info">🔄 Pocket clustering status: {task_state}</div>', unsafe_allow_html=True)
-        
-        # ALWAYS show the progress bar - NEVER disappears!
-        st.markdown("### 📊 Progress")
-        progress_bar = st.progress(progress_percent / 100)
-        
-        # Progress details in columns - always visible
-        col1, col2, col3 = st.columns(3)
-        
-        with col1:
-            st.metric("Progress", f"{progress_percent:.1f}%")
-        
-        with col2:
-            if 'elapsed' in progress_info:
-                elapsed = progress_info['elapsed']
-                st.metric("Elapsed Time", f"{elapsed:.1f}s")
-            else:
-                st.metric("Status", status)
-        
-        with col3:
-            st.metric("Current Step", current_step[:20] + "..." if len(current_step) > 20 else current_step)
-        
-        # Show detailed status - always visible
-        st.write(f"**Status:** {status}")
-        
-        # Show warning if task is taking too long (only for running tasks)
-        if task_state == 'PROGRESS' and progress_percent < 50 and 'elapsed' in progress_info and progress_info['elapsed'] > 300:  # 5 minutes
-            st.warning("⚠️ Task is taking longer than expected. This might indicate an issue with the input files or system resources.")
-        
-        # Check if task is actually completed and show results
-        if st.session_state.cluster_task_id and task.ready() and task.successful():
+            st.metric("Status", status)
+    
+    with col3:
+        st.metric("Current Step", current_step[:20] + "..." if len(current_step) > 20 else current_step)
+    
+    # Show detailed status - always visible
+    st.write(f"**Status:** {status}")
+    
+    # Show warning if task is taking too long (only for running tasks)
+    if task_state == 'PROGRESS' and progress_percent < 50 and 'elapsed' in progress_info and progress_info['elapsed'] > 300:  # 5 minutes
+        st.warning("⚠️ Task is taking longer than expected. This might indicate an issue with the input files or system resources.")
+    
+    # IMMEDIATE completion detection - check if task is ready and update status
+    if st.session_state.cluster_task_id and task and task.ready():
+        if task.successful():
             st.session_state.cluster_status = 'completed'
             st.session_state.cached_job_ids['cluster'] = st.session_state.cluster_job_id
+            # Update the status file to reflect completion
+            update_job_status(st.session_state.cluster_job_id, 'completed', 'Pocket clustering completed successfully')
+            st.rerun()  # Immediately refresh to show results
+        else:
+            st.session_state.cluster_status = 'failed'
+            st.error(f"Task failed: {task.result}")
+            st.rerun()
+    
+    # Check if task is actually completed and show results
+    if st.session_state.cluster_task_id and task and task.ready() and task.successful():
+        st.session_state.cluster_status = 'completed'
+        st.session_state.cached_job_ids['cluster'] = st.session_state.cluster_job_id
+        
+        # Display results
+        result = task.result
+        if result:
+            st.markdown("### 📈 Results")
             
-            # Display results
-            result = task.result
-            if result:
-                st.markdown("### 📈 Results")
-                
-                # Display summary metrics
-                col1, col2, col3 = st.columns(3)
-                
-                with col1:
-                    st.metric("Clusters Found", result.get('clusters_found', 'N/A'))
-                
-                with col2:
-                    st.metric("Output Directory", os.path.basename(result.get('clusters_output_dir', 'N/A')))
-                
-                with col3:
-                    st.metric("Processing Time", f"{result.get('processing_time', 0):.1f}s")
-                
-                st.success("✅ Pocket clustering complete! Analysis finished successfully.")
-                
-                # Show job ID prominently
-                st.markdown(f"""
-                <div class="job-id-display">
-                    🔑 Job ID: {st.session_state.cluster_job_id}
-                </div>
-                """, unsafe_allow_html=True)
-                st.info("💡 Use this Job ID to access your clustering results")
+            # Display summary metrics
+            col1, col2, col3 = st.columns(3)
+            
+            with col1:
+                st.metric("Clusters Found", result.get('clusters_found', 'N/A'))
+            
+            with col2:
+                st.metric("Output Directory", os.path.basename(result.get('clusters_output_dir', 'N/A')))
+            
+            with col3:
+                st.metric("Processing Time", f"{result.get('processing_time', 0):.1f}s")
+            
+            st.success("✅ Pocket clustering complete! Analysis finished successfully.")
+            
+            # Show job ID prominently
+            st.markdown(f"""
+            <div class="job-id-display">
+                🔑 Job ID: {st.session_state.cluster_job_id}
+            </div>
+            """, unsafe_allow_html=True)
+            st.info("💡 Use this Job ID to access your clustering results")
+            
+            # Show additional result details
+            if result.get('stderr'):
+                with st.expander("📋 Processing Log"):
+                    st.text(result['stderr'])
+            
+            if result.get('stdout'):
+                with st.expander("📋 Output Log"):
+                    st.text(result['stdout'])
         
         # Add action buttons - always visible when there's a task
         col1, col2 = st.columns(2)
@@ -361,6 +456,9 @@ if st.session_state.cluster_task_id:
                     st.write(f"**Task Ready:** {task.ready()}")
                     if task.ready():
                         st.write(f"**Task Result:** {task.result}")
+                        if task.successful():
+                            st.session_state.cluster_status = 'completed'
+                            st.rerun()
                 else:
                     st.write("**No active task ID**")
                 st.rerun()
@@ -379,6 +477,12 @@ if st.session_state.cluster_task_id:
                 st.write("**No active task ID**")
                 st.write(f"**Session Status:** {st.session_state.cluster_status}")
                 st.write(f"**Job ID:** {st.session_state.cluster_job_id}")
+        
+        # Auto-refresh logic for running tasks
+        if st.session_state.cluster_task_id and task_state == 'PROGRESS':
+            import time
+            time.sleep(0.1)  # Very short sleep for quick detection
+            st.rerun()
 
 # Handle completed tasks that don't have task_id anymore
 elif st.session_state.cluster_status == 'completed' and st.session_state.cluster_job_id:

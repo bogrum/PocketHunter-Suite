@@ -12,7 +12,7 @@ import json
 import zipfile
 import shutil
 import uuid
-from tasks import run_pockethunter_pipeline, run_extract_to_pdb_task, run_detect_pockets_task, run_cluster_pockets_task
+from tasks import run_pockethunter_pipeline, run_extract_to_pdb_task, run_detect_pockets_task, run_cluster_pockets_task, run_docking_task
 from celery_app import celery_app
 
 # Page configuration
@@ -140,6 +140,7 @@ pages = {
     "Step 1: Extract Frames": "extract_frames_app.py", 
     "Step 2: Detect Pockets": "detect_pockets_app.py",
     "Step 3: Cluster Pockets": "cluster_pockets_app.py",
+    "Step 4: Molecular Docking": "docking_app.py",
     "Task Monitor": "task_monitor_app.py"
 }
 
@@ -147,7 +148,7 @@ pages = {
 selected = option_menu(
     None, 
     list(pages.keys()), 
-    icons=['file-earmark-arrow-down', 'search', 'diagram-3', 'activity'], 
+    icons=['file-earmark-arrow-down', 'search', 'diagram-3', 'flask', 'activity'], 
     menu_icon="cast", 
     default_index=0, 
     orientation="horizontal",
