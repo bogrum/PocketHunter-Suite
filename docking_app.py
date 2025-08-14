@@ -183,41 +183,25 @@ st.markdown(f"""
 st.info("💡 **Save this Job ID** - you can use it to monitor progress in the Task Monitor page!")
 
 # Cluster selection
-st.markdown("### 📁 Select Cluster Results")
+st.markdown("### 📁 Enter Cluster Job ID")
 
-# Check for cluster representatives
-results_dir = "results"
-cluster_results = []
+# Input for cluster job ID
+cluster_job_id = st.text_input(
+    "Cluster Job ID:",
+    placeholder="e.g., cluster_20250815_143022_a1b2c3d4",
+    help="Enter the job ID from Step 3: Cluster Pockets that you want to use for docking"
+)
 
-if os.path.exists(results_dir):
-    for item in os.listdir(results_dir):
-        if item.startswith("cluster_") and os.path.isdir(os.path.join(results_dir, item)):
-            representatives_file = os.path.join(results_dir, item, "pocket_clusters", "cluster_representatives.csv")
-            if os.path.exists(representatives_file):
-                cluster_results.append({
-                    'job_id': item,
-                    'representatives_file': representatives_file,
-                    'timestamp': os.path.getmtime(representatives_file)
-                })
-
-if cluster_results:
-    st.success(f"✅ Found {len(cluster_results)} cluster result(s) available for docking")
+if cluster_job_id:
+    # Construct path to cluster representatives file
+    representatives_file = os.path.join("results", cluster_job_id, "pocket_clusters", "cluster_representatives.csv")
     
-    # Sort by timestamp (newest first)
-    cluster_results.sort(key=lambda x: x['timestamp'], reverse=True)
-    
-    # Select cluster results
-    selected_cluster = st.selectbox(
-        "Select Cluster Results",
-        options=cluster_results,
-        format_func=lambda x: f"{x['job_id']} ({datetime.fromtimestamp(x['timestamp']).strftime('%Y-%m-%d %H:%M')})"
-    )
-    
-    if selected_cluster:
-        # Display cluster representatives info
+    if os.path.exists(representatives_file):
+        st.success(f"✅ Found cluster job: {cluster_job_id}")
+        
         try:
-            df_reps = pd.read_csv(selected_cluster['representatives_file'])
-            st.info(f"📊 Selected cluster has {len(df_reps)} representative pockets")
+            df_reps = pd.read_csv(representatives_file)
+            st.info(f"📊 Cluster has {len(df_reps)} representative pockets")
             
             # PDB file selection
             st.markdown("### 🎯 Select PDB Files for Docking")
@@ -304,9 +288,12 @@ if cluster_results:
                 
         except Exception as e:
             st.error(f"Error reading cluster representatives: {e}")
+    else:
+        st.error(f"❌ Cluster job '{cluster_job_id}' not found or incomplete. Please check the job ID and ensure Step 3: Cluster Pockets has completed successfully.")
+        st.info("💡 **Tip:** You can find your cluster job ID in the Task Monitor page or from the Step 3: Cluster Pockets results.")
 else:
-    st.error("❌ No cluster results found. Please run Step 3: Cluster Pockets first.")
-    st.stop()
+    st.info("ℹ️ **Enter a Cluster Job ID** from Step 3: Cluster Pockets to start docking configuration.")
+    st.info("💡 **Tip:** You can find your cluster job ID in the Task Monitor page or from the Step 3: Cluster Pockets results.")
 
 # Ligand upload section
 st.markdown("### 🧪 Ligand Library")

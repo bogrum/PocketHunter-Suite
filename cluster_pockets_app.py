@@ -36,6 +36,11 @@ if st.session_state.cluster_job_id and not st.session_state.cluster_task_id:
                 if 'task_id' in status_data:
                     st.session_state.cluster_task_id = status_data['task_id']
                     st.session_state.cluster_status = status_data.get('status', 'running')
+                    # If task is completed, update cached job IDs
+                    if status_data.get('status') == 'completed':
+                        if 'cached_job_ids' not in st.session_state:
+                            st.session_state.cached_job_ids = {}
+                        st.session_state.cached_job_ids['cluster'] = st.session_state.cluster_job_id
         except Exception as e:
             st.error(f"Error reading status file: {str(e)}")
 
@@ -59,7 +64,7 @@ if not st.session_state.cluster_job_id and 'cached_job_ids' in st.session_state:
 # Auto-detect running cluster jobs if no job_id is set
 if not st.session_state.cluster_job_id:
 
-    # Look for the most recent cluster job that's still running
+    # Look for the most recent cluster job that's still running or completed
     cluster_jobs = [f for f in os.listdir(RESULTS_DIR) if f.startswith('cluster_') and f.endswith('_status.json')]
     if cluster_jobs:
         # Sort by modification time (most recent first)
@@ -67,16 +72,23 @@ if not st.session_state.cluster_job_id:
         latest_job_file = cluster_jobs[0]
         job_id = latest_job_file.replace('_status.json', '')
         
-        # Check if this job is still running
+        # Check if this job is still running or completed
         status_file = os.path.join(RESULTS_DIR, latest_job_file)
         try:
             with open(status_file, 'r') as f:
                 status_data = json.load(f)
-                if status_data.get('status') == 'running':
+                status = status_data.get('status', 'running')
+                if status in ['running', 'completed']:
                     st.session_state.cluster_job_id = job_id
                     if 'task_id' in status_data:
                         st.session_state.cluster_task_id = status_data['task_id']
-                        st.session_state.cluster_status = 'running'
+                    st.session_state.cluster_status = status
+                    
+                    # If completed, update cached job IDs
+                    if status == 'completed':
+                        if 'cached_job_ids' not in st.session_state:
+                            st.session_state.cached_job_ids = {}
+                        st.session_state.cached_job_ids['cluster'] = job_id
 
  
         except Exception as e:
@@ -379,17 +391,35 @@ if show_progress:
         st.warning("⚠️ Task is taking longer than expected. This might indicate an issue with the input files or system resources.")
     
     # IMMEDIATE completion detection - check if task is ready and update status
-    if st.session_state.cluster_task_id and task and task.ready():
-        if task.successful():
-            st.session_state.cluster_status = 'completed'
-            st.session_state.cached_job_ids['cluster'] = st.session_state.cluster_job_id
-            # Update the status file to reflect completion
-            update_job_status(st.session_state.cluster_job_id, 'completed', 'Pocket clustering completed successfully')
-            st.rerun()  # Immediately refresh to show results
-        else:
-            st.session_state.cluster_status = 'failed'
-            st.error(f"Task failed: {task.result}")
-            st.rerun()
+if st.session_state.cluster_task_id and task and task.ready():
+    if task.successful():
+        st.session_state.cluster_status = 'completed'
+        if 'cached_job_ids' not in st.session_state:
+            st.session_state.cached_job_ids = {}
+        st.session_state.cached_job_ids['cluster'] = st.session_state.cluster_job_id
+        # Update the status file to reflect completion
+        update_job_status(st.session_state.cluster_job_id, 'completed', 'Pocket clustering completed successfully')
+        st.rerun()  # Immediately refresh to show results
+    else:
+        st.session_state.cluster_status = 'failed'
+        st.error(f"Task failed: {task.result}")
+        st.rerun()
+
+# Also check status file for completion if task is not ready but status file says completed
+elif st.session_state.cluster_job_id and st.session_state.cluster_status != 'completed':
+    status_file = os.path.join(RESULTS_DIR, f'{st.session_state.cluster_job_id}_status.json')
+    if os.path.exists(status_file):
+        try:
+            with open(status_file, 'r') as f:
+                status_data = json.load(f)
+                if status_data.get('status') == 'completed':
+                    st.session_state.cluster_status = 'completed'
+                    if 'cached_job_ids' not in st.session_state:
+                        st.session_state.cached_job_ids = {}
+                    st.session_state.cached_job_ids['cluster'] = st.session_state.cluster_job_id
+                    st.rerun()  # Immediately refresh to show results
+        except Exception as e:
+            pass  # Silently ignore errors here
     
     # Check if task is actually completed and show results
     if st.session_state.cluster_task_id and task and task.ready() and task.successful():
