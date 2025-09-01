@@ -83,7 +83,9 @@ The application is built on a scalable and robust architecture.
 
 ## 🎯 Molecular Docking
 
-The molecular docking feature is a core component of the pipeline. It is integrated using **SMINA**, a fast and accurate docking tool.
+The molecular docking feature is a core component of the pipeline. It is integrated using **SMINA**, a fast and accurate docking tool. 
+
+The PocketHunter Suite is being developed to include molecular docking capabilities as Step 4 of the pipeline. **Please note: This feature is currently under active development and may not be fully functional yet.**
 
 ### Docking Parameters
 
